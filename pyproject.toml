@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "narratortool"
+version = "0.1.0"
+description = "Narrate text, PDF, EPUB, and Word documents to MP3 with local neural TTS"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "CryptoJones", email = "cryptojones@owasp.org" }]
+keywords = ["tts", "kokoro", "audiobook", "narration", "epub", "pdf"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+
+# numpy is the only hard requirement; every parser and the TTS engine are extras, so
+# a text-only install stays small.
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+kokoro = ["kokoro>=0.9.4", "torch>=2.0", "soundfile>=0.12"]
+pdf = ["pypdf>=4.0"]
+epub = ["ebooklib>=0.18", "beautifulsoup4>=4.12"]
+docx = ["python-docx>=1.1"]
+html = ["beautifulsoup4>=4.12"]
+all = [
+    "kokoro>=0.9.4", "torch>=2.0", "soundfile>=0.12",
+    "pypdf>=4.0", "ebooklib>=0.18", "beautifulsoup4>=4.12", "python-docx>=1.1",
+]
+dev = ["pytest>=8.0", "ruff>=0.5"]
+
+[project.scripts]
+narrate = "narratortool.cli:main"
+narratortool = "narratortool.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/CryptoJones/NarratorTool"
+Issues = "https://github.com/CryptoJones/NarratorTool/issues"
+
+[tool.setuptools.packages.find]
+include = ["narratortool*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

@@ -237,3 +237,44 @@ class TestChartLabelSweep:
     def test_punctuated_lines_are_not_labels(self):
         text = "0.2 0.4 0.6 0.8\nThe end.\nAnd more."
         assert find_figure_lines(text) == ["0.2 0.4 0.6 0.8"]
+
+
+class TestFigureFalsePositives:
+    """Cases found by auditing a real EPUB run log. Each one dropped live prose."""
+
+    def test_inline_markup_does_not_shatter_a_sentence(self):
+        """EPUB chapters wrap words in <i>/<sup>; those must not become line breaks."""
+        from narratortool.extract.html import html_to_text
+
+        out = html_to_text(
+            "<p>He endeav<i>our</i>ed to arouse himself, "
+            "known as <i>cybernetics</i>, or <i>connectionism</i>.</p>"
+        )
+        assert "endeavoured" in out
+        assert "cybernetics, or connectionism." in out
+        assert "\n" not in out.strip()
+
+    def test_a_stray_punctuation_line_does_not_eat_its_neighbours(self):
+        """A lone "," from an extractor seeded the sweep and ate the prose around it."""
+        text = "always\n,\nwords\ndeep learning\ncybernetics"
+        assert find_figure_lines(text) == [","]
+
+    def test_a_heading_starting_with_a_figure_word_is_not_a_caption(self):
+        for heading in ("ALGORITHMIC CREATIVITY?", "TABLES AND CHAIRS", "Charting A Course"):
+            assert not find_figure_lines(heading), heading
+
+    def test_a_word_containing_a_digit_is_not_a_number(self):
+        for line in ("—@DougBlank2", "COVID19 changed everything", "R2D2 beeped"):
+            assert not find_figure_lines(line), line
+
+    def test_prose_naming_a_hyphenated_figure_is_kept(self):
+        line = "Figure P2-1 highlights six roles found in the missing middle."
+        assert not find_figure_lines(line)
+
+    def test_hyphenated_captions_still_go(self):
+        assert find_figure_lines("Figure P2-1: The missing middle")
+        assert find_figure_lines("Figure 4 - Results")
+
+    def test_index_entries_are_still_suppressed(self):
+        text = "Accenture, 44, 47, 178, 212-213, 236\nadaptive processes, 8-10, 43-44, 51"
+        assert len(find_figure_lines(text)) == 2

@@ -57,12 +57,13 @@ _FIGURE_WORD = (
 # The roman-numeral and bare-letter forms are case-sensitive even though the figure
 # word is not: under IGNORECASE they would match any lowercase letter, so "Figures are
 # shown" would parse as figure "s" of a caption.
-_FIGURE_NUMBER = r"(?:[A-Za-z]?\d+(?:\.\d+)*[a-z]?|(?-i:[IVXLCDM]{1,6}|[A-Z]))"
+_FIGURE_NUMBER = r"(?:[A-Za-z]?\d+(?:[.-]\d+)*[a-z]?|(?-i:[IVXLCDM]{1,6}|[A-Z]))"
 _CAPTION = re.compile(
-    rf"^\(?(?:{_FIGURE_WORD})\.?\s*{_FIGURE_NUMBER}\)?"
+    rf"^\(?(?:{_FIGURE_WORD})\b\.?\s*{_FIGURE_NUMBER}\)?"
     r"(?:"
     r"\s*$"                    # a bare label line: "Figure 3.2"
-    r"|\s*[.:;,—–|)\]-]+\s*"   # "Figure 3.2:" / "Fig. 4 —"
+    r"|\s*[.:;,|)\]]+\s*"       # "Figure 3.2:" / "Table 2."
+    r"|\s+[-—–]\s+"            # "Fig. 4 — Results" (spaced dash, not "P2-1")
     r'|\s+(?=(?-i:[A-Z])|[(\[\"\'])'  # "Figure 3.2 Accuracy versus epochs"
     r")",
     re.IGNORECASE,
@@ -84,6 +85,8 @@ _MIN_DEBRIS_NUMBERS = 3
 _MAX_LABEL_CHARS = 30
 _MAX_LABEL_WORDS = 3
 _MAX_LABELS_PER_SIDE = 6
+# "10ms" and "1e-3" are numbers with a unit; "@DougBlank2" is a word with a digit in it.
+_MAX_UNIT_LETTERS = 3
 
 
 def normalize(text: str, strip_boilerplate: bool = True, strip_figures: bool = True) -> str:
@@ -174,12 +177,17 @@ def _sweep_chart_labels(lines: list[str], verdict: list[str | None]) -> None:
     isolation would eat every heading in the book. What marks them is where they sit:
     immediately against the tick numbers, with no blank line between.
 
-    Only numeric debris seeds this, never a caption. A section heading following a
-    caption is exactly the case that would otherwise be swallowed.
+    Only numeric debris seeds this, never a caption and never a punctuation-only line.
+    A section heading following a caption is exactly the case that would otherwise be
+    swallowed, and a stray "," left behind by an extractor must never pull the words
+    around it out of the book.
     """
     # Seeds are snapshotted before sweeping. Reading the list while mutating it would
     # let each swept label seed another sweep, and the per-seed cap would bound nothing.
-    seeds = [i for i, kind in enumerate(verdict) if kind == "debris"]
+    seeds = [
+        i for i, kind in enumerate(verdict)
+        if kind == "debris" and any(c.isdigit() for c in lines[i])
+    ]
 
     for seed in seeds:
         for step in (-1, 1):
@@ -208,6 +216,10 @@ def _is_chart_label(line: str) -> bool:
     return len(stripped.split()) <= _MAX_LABEL_WORDS
 
 
+def _alpha_count(token: str) -> int:
+    return sum(1 for c in token if c.isalpha())
+
+
 def _is_plot_debris(line: str) -> bool:
     """Is this line the loose text of a chart rather than a sentence?
 
@@ -227,10 +239,12 @@ def _is_plot_debris(line: str) -> bool:
         bare = token.strip("([{<>}])\"'“”‘’.,;:!?—–-")
         if not bare:
             symbolic += 1
-        elif any(c.isdigit() for c in bare):
-            numeric += 1
+        elif any(c.isdigit() for c in bare) and _alpha_count(bare) <= _MAX_UNIT_LETTERS:
+            numeric += 1  # 0.5, 10ms, 1e-3, 90° — a number, optionally with a unit
         elif not any(c.isalnum() for c in bare):
             symbolic += 1
+        elif any(c.isdigit() for c in bare):
+            words += 1  # "@DougBlank2", "COVID19" — a word, not a tick label
         elif len(bare) == 1:
             single += 1  # axis names: x, y, n, k
         else:

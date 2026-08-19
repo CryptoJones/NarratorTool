@@ -35,8 +35,15 @@ def html_to_text(raw: str) -> str:
     soup = BeautifulSoup(raw, "html.parser")
     for tag in soup(list(_DROP)):
         tag.decompose()
-    text = soup.get_text("\n")
-    return _collapse(text)
+
+    # Break lines at block boundaries only. get_text("\n") breaks at *every* tag
+    # boundary, inline ones included, so "endeav<i>our</i>ed" arrives as three lines
+    # and a sentence wrapped in <i> and <sup> shatters into fragments. Downstream that
+    # is unrecoverable: the fragments read as separate lines of text.
+    for tag in soup.find_all(list(_BLOCK)):
+        tag.insert_before("\n")
+        tag.insert_after("\n")
+    return _collapse(soup.get_text())
 
 
 def first_heading(raw: str) -> str | None:
@@ -55,7 +62,9 @@ def _regex_to_text(raw: str) -> str:
     for tag in _DROP:
         raw = re.sub(rf"<{tag}\b.*?</{tag}>", " ", raw, flags=re.IGNORECASE | re.DOTALL)
     raw = re.sub(rf"<\s*/?\s*(?:{'|'.join(_BLOCK)})\b[^>]*>", "\n", raw, flags=re.IGNORECASE)
-    raw = re.sub(r"<[^>]+>", " ", raw)
+    # Inline tags vanish without leaving a space, exactly as a browser renders them:
+    # "endeav<i>our</i>ed" is one word, not three.
+    raw = re.sub(r"<[^>]+>", "", raw)
     return _collapse(html_module.unescape(raw))
 
 

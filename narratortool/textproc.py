@@ -3,7 +3,8 @@
 Two jobs:
 
 `normalize` removes artifacts that sound wrong when read aloud — PDF line-break
-hyphenation, page-number lines, Project Gutenberg's legal boilerplate.
+hyphenation, page-number lines, Project Gutenberg's legal boilerplate, and the text
+that lives inside figures and diagrams.
 
 `chunk` splits into pieces small enough for a TTS model's context. Splitting happens
 on sentence boundaries because a chunk edge inside a sentence is audible: the model
@@ -35,17 +36,67 @@ _DOT = "\x00"
 _GUTENBERG_START = re.compile(r"^\*\*\*\s*START OF TH[EIS].*?\*\*\*\s*$", re.MULTILINE)
 _GUTENBERG_END = re.compile(r"^\*\*\*\s*END OF TH[EIS].*?\*\*\*\s*$", re.MULTILINE)
 
+# --- figures and diagrams -----------------------------------------------------------
+#
+# A PDF's text layer contains everything drawn on the page, including the text inside
+# charts. Extraction returns it as loose fragments in drawing order, so a paper full of
+# plots narrates as "Figure 3.2 colon accuracy versus epochs zero point two zero point
+# four zero point six". None of it is prose and none of it is speakable.
+#
+# Two shapes are recognised: caption lines (labelled, so they can be matched exactly)
+# and the scattered axis ticks, tick labels, and legend keys around them (which have no
+# label, so they are judged by what they are made of). Everything here errs towards
+# keeping a line: a wrongly kept axis label is a moment of nonsense, a wrongly dropped
+# line is content the listener never learns was there.
 
-def normalize(text: str, strip_boilerplate: bool = True) -> str:
+_FIGURE_WORD = (
+    r"fig(?:ure|s)?|table|chart|diagram|graph|plate|exhibit|listing|algorithm"
+    r"|scheme|illustration|image|photo|panel"
+)
+# A figure number: 3, 3.2, 3.2.1, 12a, S1, A.1, IV, or a bare letter.
+# The roman-numeral and bare-letter forms are case-sensitive even though the figure
+# word is not: under IGNORECASE they would match any lowercase letter, so "Figures are
+# shown" would parse as figure "s" of a caption.
+_FIGURE_NUMBER = r"(?:[A-Za-z]?\d+(?:\.\d+)*[a-z]?|(?-i:[IVXLCDM]{1,6}|[A-Z]))"
+_CAPTION = re.compile(
+    rf"^\(?(?:{_FIGURE_WORD})\.?\s*{_FIGURE_NUMBER}\)?"
+    r"(?:"
+    r"\s*$"                    # a bare label line: "Figure 3.2"
+    r"|\s*[.:;,—–|)\]-]+\s*"   # "Figure 3.2:" / "Fig. 4 —"
+    r'|\s+(?=(?-i:[A-Z])|[(\[\"\'])'  # "Figure 3.2 Accuracy versus epochs"
+    r")",
+    re.IGNORECASE,
+)
+# "Figure 3 shows that ..." is prose, not a caption: the separator forms above require
+# either punctuation or a capitalised word after the number, so a lowercase verb here
+# leaves the line alone.
+
+_ENDS_SENTENCE = re.compile(r"[.!?][\"')\]]*$")
+
+# How much of a wrapped caption to follow past its first line.
+_MAX_CAPTION_LINES = 2
+# Debris is short. Anything longer is prose that happens to contain numbers.
+_MAX_DEBRIS_CHARS = 60
+# Axis ticks come in runs; two numbers on a line is a date or a citation, not an axis.
+_MIN_DEBRIS_NUMBERS = 3
+# An axis name or legend key carries no digits, so it can only be recognised by the
+# company it keeps. These bounds are what stop that spreading into the prose.
+_MAX_LABEL_CHARS = 30
+_MAX_LABEL_WORDS = 3
+_MAX_LABELS_PER_SIDE = 6
+
+
+def normalize(text: str, strip_boilerplate: bool = True, strip_figures: bool = True) -> str:
     if strip_boilerplate:
         text = _strip_gutenberg(text)
 
-    # PDF extraction leaves words split across line breaks: "narra-\ntion".
-    text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
-    # A lone number on its own line is a page number, not content.
-    text = re.sub(r"^\s*\d{1,4}\s*$", "", text, flags=re.MULTILINE)
-    # Runs of dots/underscores (tables of contents, form fields) are unspeakable.
-    text = re.sub(r"[.…_]{4,}", " ", text)
+    text = _pre_clean(text)
+
+    if strip_figures:
+        # Must happen before the wrapped-line join below, while a figure's fragments are
+        # still on lines of their own; once joined into a paragraph they are unfindable.
+        text = "\n".join(_partition_figure_lines(text)[0])
+
     # Join hard-wrapped lines inside a paragraph, but keep paragraph breaks. The \n in
     # the lookbehind is what protects blank-line separators: without it the second
     # newline of a "\n\n" pair gets joined and every paragraph runs together.
@@ -54,6 +105,144 @@ def normalize(text: str, strip_boilerplate: bool = True) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def find_figure_lines(text: str, strip_boilerplate: bool = True) -> list[str]:
+    """The lines `normalize` would suppress as figure text. For reporting and tests."""
+    if strip_boilerplate:
+        text = _strip_gutenberg(text)
+    return _partition_figure_lines(_pre_clean(text))[1]
+
+
+def _pre_clean(text: str) -> str:
+    """Line-preserving cleanups that must precede any per-line judgement."""
+    # PDF extraction leaves words split across line breaks: "narra-\ntion".
+    text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
+    # A lone number on its own line is a page number, not content.
+    text = re.sub(r"^\s*\d{1,4}\s*$", "", text, flags=re.MULTILINE)
+    # Runs of dots/underscores (tables of contents, form fields) are unspeakable.
+    return re.sub(r"[.…_]{4,}", " ", text)
+
+
+def _partition_figure_lines(text: str) -> tuple[list[str], list[str]]:
+    """Split lines into (kept, dropped-as-figure-text)."""
+    lines = text.split("\n")
+    verdict = _classify_lines(lines)
+    _sweep_chart_labels(lines, verdict)
+
+    kept = [line for line, v in zip(lines, verdict) if v is None]
+    dropped = [line.strip() for line, v in zip(lines, verdict) if v is not None]
+    return kept, dropped
+
+
+def _classify_lines(lines: list[str]) -> list[str | None]:
+    """Label each line None (keep), "caption", or "debris"."""
+    verdict: list[str | None] = []
+    caption_lines_left = 0
+
+    for line in lines:
+        stripped = line.strip()
+
+        if caption_lines_left and stripped:
+            # A caption that wrapped onto the next line. Follow it only until a line
+            # ends a sentence, and never for more than _MAX_CAPTION_LINES.
+            caption_lines_left -= 1
+            if _ENDS_SENTENCE.search(stripped):
+                caption_lines_left = 0
+            verdict.append("caption")
+            continue
+        caption_lines_left = 0
+
+        if not stripped:
+            verdict.append(None)
+        elif _CAPTION.match(stripped):
+            caption_lines_left = 0 if _ENDS_SENTENCE.search(stripped) else _MAX_CAPTION_LINES
+            verdict.append("caption")
+        elif _is_plot_debris(stripped):
+            verdict.append("debris")
+        else:
+            verdict.append(None)
+
+    return verdict
+
+
+def _sweep_chart_labels(lines: list[str], verdict: list[str | None]) -> None:
+    """Drop axis names and legend keys sitting against a run of chart numbers.
+
+    "Accuracy", "Epochs", "baseline ours ablation" are ordinary words — nothing about
+    them reads as chart text on their own, and a rule broad enough to catch them in
+    isolation would eat every heading in the book. What marks them is where they sit:
+    immediately against the tick numbers, with no blank line between.
+
+    Only numeric debris seeds this, never a caption. A section heading following a
+    caption is exactly the case that would otherwise be swallowed.
+    """
+    # Seeds are snapshotted before sweeping. Reading the list while mutating it would
+    # let each swept label seed another sweep, and the per-seed cap would bound nothing.
+    seeds = [i for i, kind in enumerate(verdict) if kind == "debris"]
+
+    for seed in seeds:
+        for step in (-1, 1):
+            index = seed + step
+            for _ in range(_MAX_LABELS_PER_SIDE):
+                if not 0 <= index < len(lines):
+                    break
+                if verdict[index] is not None:  # already gone; keep walking outward
+                    index += step
+                    continue
+                if not _is_chart_label(lines[index]):
+                    break
+                verdict[index] = "debris"
+                index += step
+
+
+def _is_chart_label(line: str) -> bool:
+    """A bare word or two that could be an axis name or a legend key."""
+    stripped = line.strip()
+    if not stripped or len(stripped) > _MAX_LABEL_CHARS:
+        return False
+    if any(c.isdigit() for c in stripped):
+        return False  # numeric lines are debris on their own terms
+    if stripped[-1] in ".!?:;,":
+        return False  # punctuation means a sentence or a list lead-in, not a label
+    return len(stripped.split()) <= _MAX_LABEL_WORDS
+
+
+def _is_plot_debris(line: str) -> bool:
+    """Is this line the loose text of a chart rather than a sentence?
+
+    Axis ticks, tick labels, and legend keys extract as short lines made of numbers and
+    stray symbols. Prose that merely mentions numbers keeps its words, which is what
+    separates "Accuracy 0.2 0.4 0.6 0.8" from "In 1901 he sailed for two years."
+    """
+    if len(line) > _MAX_DEBRIS_CHARS:
+        return False
+
+    tokens = line.split()
+    if not tokens:
+        return False
+
+    numeric = symbolic = single = words = 0
+    for token in tokens:
+        bare = token.strip("([{<>}])\"'“”‘’.,;:!?—–-")
+        if not bare:
+            symbolic += 1
+        elif any(c.isdigit() for c in bare):
+            numeric += 1
+        elif not any(c.isalnum() for c in bare):
+            symbolic += 1
+        elif len(bare) == 1:
+            single += 1  # axis names: x, y, n, k
+        else:
+            words += 1
+
+    # Nothing but numbers, symbols and single letters. The digit requirement keeps a
+    # lone roman numeral or a bare "I." — chapter headings in plain-text books — safe.
+    if numeric + symbolic + single == len(tokens) and (numeric or symbolic == len(tokens)):
+        return True
+
+    # A run of numbers with a label or two attached: "Epochs 10 20 30 40".
+    return numeric >= _MIN_DEBRIS_NUMBERS and words <= 2
 
 
 def _strip_gutenberg(text: str) -> str:

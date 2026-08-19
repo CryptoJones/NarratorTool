@@ -28,4 +28,12 @@ class TTSBackend(Protocol):
 
 
 class SynthesisError(Exception):
-    pass
+    """One chunk failed. Retryable: the next chunk may well succeed."""
+
+
+class BackendUnavailable(Exception):
+    """The engine itself is unusable — model missing, weights corrupt, no device.
+
+    Distinct from SynthesisError because retrying is pointless: the pipeline stops
+    immediately rather than grinding through thousands of chunks that cannot succeed.
+    """

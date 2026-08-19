@@ -1,7 +1,7 @@
 """TTS backend registry."""
 from __future__ import annotations
 
-from .base import SynthesisError, TTSBackend
+from .base import BackendUnavailable, SynthesisError, TTSBackend
 
 _BACKENDS = {"kokoro": "kokoro_backend:KokoroBackend"}
 
@@ -16,7 +16,16 @@ def get_backend(name: str, **kwargs) -> TTSBackend:
         raise ValueError(f"unknown TTS backend {name!r}; available: {', '.join(available_backends())}")
     module_name, class_name = target.split(":")
     module = __import__(f"{__name__}.{module_name}", fromlist=[class_name])
-    return getattr(module, class_name)(**kwargs)
+    try:
+        return getattr(module, class_name)(**kwargs)
+    except TypeError as exc:  # a bad kwarg here is a caller bug worth naming clearly
+        raise ValueError(f"cannot construct backend {name!r}: {exc}") from exc
 
 
-__all__ = ["TTSBackend", "SynthesisError", "get_backend", "available_backends"]
+__all__ = [
+    "TTSBackend",
+    "SynthesisError",
+    "BackendUnavailable",
+    "get_backend",
+    "available_backends",
+]

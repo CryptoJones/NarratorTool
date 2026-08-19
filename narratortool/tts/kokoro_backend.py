@@ -18,7 +18,7 @@ import logging
 
 import numpy as np
 
-from .base import SynthesisError
+from .base import BackendUnavailable, SynthesisError
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +46,7 @@ class KokoroBackend:
         self.speed = speed
         self._device = device
         self._pipeline = None  # built lazily so --list-voices etc. stay fast
+        self._load_error: str | None = None
 
     @property
     def sample_rate(self) -> int:
@@ -64,6 +65,9 @@ class KokoroBackend:
     def _ensure_pipeline(self):
         if self._pipeline is not None:
             return self._pipeline
+        if self._load_error is not None:
+            # Loading already failed once; every chunk after would fail identically.
+            raise BackendUnavailable(self._load_error)
         try:
             from kokoro import KPipeline
         except ImportError as exc:
@@ -74,10 +78,16 @@ class KokoroBackend:
         log.info("loading Kokoro (lang=%s, voice=%s, device=%s)",
                  self.lang_code, self.voice, self.device)
         try:
-            self._pipeline = KPipeline(lang_code=self.lang_code, device=self.device)
-        except TypeError:
-            # Older kokoro releases do not accept `device`.
-            self._pipeline = KPipeline(lang_code=self.lang_code)
+            try:
+                self._pipeline = KPipeline(lang_code=self.lang_code, device=self.device)
+            except TypeError:
+                # Older kokoro releases do not accept `device`.
+                self._pipeline = KPipeline(lang_code=self.lang_code)
+        except Exception as exc:  # noqa: BLE001 - weights download, bad lang code, dead GPU
+            self._load_error = (
+                f"could not load Kokoro (lang={self.lang_code!r}, device={self.device}): {exc}"
+            )
+            raise BackendUnavailable(self._load_error) from exc
         return self._pipeline
 
     def synthesize(self, text: str) -> np.ndarray:
@@ -92,14 +102,26 @@ class KokoroBackend:
                 _to_numpy(item[2])
                 for item in pipeline(text, voice=self.voice, speed=self.speed)
             ]
+        except BackendUnavailable:
+            raise
         except Exception as exc:  # noqa: BLE001 - surfaced with context below
             raise SynthesisError(f"Kokoro failed on {text[:60]!r}: {exc}") from exc
 
         segments = [s for s in segments if s is not None and s.size]
         if not segments:
+            # Not an error: some inputs (a lone symbol, a stray bullet) have nothing to
+            # say. The pipeline logs it as a silent chunk and moves on.
             log.warning("Kokoro produced no audio for %r", text[:60])
             return np.zeros(0, dtype=np.float32)
-        return np.concatenate(segments).astype(np.float32, copy=False)
+
+        audio = np.concatenate(segments).astype(np.float32, copy=False)
+        # A NaN/inf run means the model diverged on this text — worth a retry, and worth
+        # failing loudly rather than writing a burst of static into the book.
+        if not np.isfinite(audio).all():
+            raise SynthesisError(
+                f"Kokoro produced non-finite audio for {text[:60]!r}"
+            )
+        return audio
 
 
 def _to_numpy(audio) -> np.ndarray | None:

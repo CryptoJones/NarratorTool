@@ -36,7 +36,8 @@ def extract(path: str | Path) -> Document:
     """Parse `path` into a Document, choosing the extractor by extension."""
     path = Path(path)
     if not path.is_file():
-        raise FileNotFoundError(path)
+        what = "is a directory" if path.is_dir() else "no such file"
+        raise FileNotFoundError(f"{what}: {path}")
 
     target = _REGISTRY.get(path.suffix.lower())
     if target is None:

@@ -13,6 +13,24 @@ narrate notes.md --voice bm_george --speed 1.0
 narrate huge.txt --dry-run             # parse + chunk, report stats, synthesize nothing
 ```
 
+## Quick start
+
+```bash
+./INSTALL.sh                 # venv + package + extras, then prints how to narrate
+.venv/bin/narrate book.epub  # -> book.epub's text, read aloud, as book.mp3
+```
+
+`narrate` lives inside the project's `.venv`, so the bare name only works in a shell
+where that venv is active. Either call it by path as above, or activate once:
+
+```bash
+source .venv/bin/activate
+narrate book.epub
+```
+
+To type `narrate` from anywhere without activating, run `./INSTALL.sh --link`, which
+symlinks it into `~/.local/bin`.
+
 ## Voice
 
 The default is **`bf_emma` at speed 0.88** — Emma, UK female. This is the house
@@ -28,6 +46,26 @@ voice under an American language code still produces audio, just with the wrong
 phonemes. Override with `--lang` only if you know you need to.
 
 ## Install
+
+```bash
+./INSTALL.sh
+```
+
+The installer picks an interpreter Kokoro supports, builds `.venv` against it (using
+`uv` if you have it), installs the package with every extra, checks for `ffmpeg` and
+`espeak-ng`, and finishes by printing the exact command to narrate a file.
+
+| Flag | Effect |
+|---|---|
+| `--extras kokoro` | TTS + plain text only, instead of everything |
+| `--extras pdf,epub` | parsers only — skips the torch download |
+| `--dev` | also install `pytest` and `ruff` |
+| `--link` | symlink `narrate` into `~/.local/bin` |
+| `--recreate` | rebuild `.venv` from scratch |
+
+It is safe to re-run: an existing `.venv` is reused unless you pass `--recreate`.
+
+### By hand
 
 ```bash
 pip install -e ".[all]"      # every format + Kokoro
@@ -46,11 +84,12 @@ Parsers are extras, so a text-only install does not drag in `pypdf`, `ebooklib`,
 | `html` | `.html`, and better `.epub` chapter text |
 
 **Python version:** the parsers and CLI run on any Python ≥ 3.10, but the `kokoro`
-extra requires **`>=3.10,<3.13`** — Kokoro publishes no wheels for 3.13+. On a system
-Python that is too new, build the venv against an older interpreter:
+extra requires **`>=3.10,<3.13`** — Kokoro publishes no wheels for 3.13+. `INSTALL.sh`
+picks a supported interpreter for you and refuses to build against one that is too new.
+Doing it by hand on a system Python that is too new:
 
 ```bash
-uv venv --python 3.11 .venv
+uv venv --python 3.11 .venv && source .venv/bin/activate
 ```
 
 **System packages:** `ffmpeg` for MP3 encoding, and `espeak-ng` for any non-American
@@ -112,8 +151,8 @@ ocrmypdf scanned.pdf searchable.pdf && narrate searchable.pdf
 ## Development
 
 ```bash
-pip install -e ".[dev,html]"
-pytest
+./INSTALL.sh --dev
+.venv/bin/pytest
 ```
 
 The test suite covers text processing and extraction without needing the TTS model

@@ -239,6 +239,54 @@ class TestChartLabelSweep:
         assert find_figure_lines(text) == ["0.2 0.4 0.6 0.8"]
 
 
+class TestGraphVertexRuns:
+    """A graph diagram has no axis, so its node names have no tick line to seed from.
+
+    Found in a real PDF run: the nodes extract one per line, survive individually, and
+    only become audible letter soup once `normalize` joins them into a paragraph.
+    """
+
+    def test_a_run_of_vertex_lines_is_dropped(self):
+        text = "Consider the graph below.\nA\nDB\nC\nF\nE\nThe figure illustrates it."
+        dropped = find_figure_lines(text)
+        assert {"A", "DB", "C", "F", "E"} <= set(dropped)
+
+    def test_the_joined_run_never_reaches_the_narration(self):
+        text = "Consider the graph below.\nA\nDB\nC\nF\nE\nThe figure illustrates it."
+        out = normalize(text)
+        assert "A DB C F E" not in out
+        assert "Consider the graph below." in out
+        assert "The figure illustrates it." in out
+
+    def test_a_swept_number_does_not_split_a_run(self):
+        """Tick debris inside the figure must not break the run into two short halves."""
+        text = "Intro line here.\nA\n52 39\nDB\nC\nE\nOutro line here."
+        dropped = find_figure_lines(text)
+        assert {"A", "DB", "C", "E"} <= set(dropped)
+
+    def test_two_short_lines_are_not_a_run(self):
+        text = "Intro line here.\nI\nII\nThe list above is roman."
+        dropped = find_figure_lines(text)
+        assert "I" not in dropped and "II" not in dropped
+
+    def test_a_blank_line_breaks_a_run(self):
+        text = "Intro line here.\nA\nB\n\nC\nOutro line here."
+        assert find_figure_lines(text) == []
+
+    def test_ordinary_short_words_are_not_vertices(self):
+        """Three-plus letter lines are words, not node names."""
+        text = "Intro line here.\nthe\nand\nfor\nOutro line here."
+        assert find_figure_lines(text) == []
+
+    def test_a_joined_vertex_row_on_one_line_is_dropped(self):
+        """Some extractors emit the whole row already joined."""
+        assert find_figure_lines("A DB C F E") == ["A DB C F E"]
+
+    def test_an_acronym_row_is_not_a_vertex_row(self):
+        """No single letters, so it is words rather than node names."""
+        assert find_figure_lines("US UK EU") == []
+
+
 class TestFigureFalsePositives:
     """Cases found by auditing a real EPUB run log. Each one dropped live prose."""
 

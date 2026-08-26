@@ -129,8 +129,14 @@ def encode_mp3(
     sample_rate: int,
     tags: Tags | None = None,
     quality: int = 2,
+    audio_filter: str | None = None,
 ) -> Path:
-    """Encode raw PCM to MP3. `quality` is LAME VBR 0 (best) - 9 (worst)."""
+    """Encode raw PCM to MP3. `quality` is LAME VBR 0 (best) - 9 (worst).
+
+    `audio_filter` is an ffmpeg -af chain applied during this one pass. Voice profiles
+    use it for their pitch shift: the encode already runs ffmpeg over the whole book,
+    so treating it here costs nothing and avoids per-chunk seams.
+    """
     ffmpeg = require_ffmpeg()
     out_path = Path(out_path)
     pcm_path = Path(pcm_path)
@@ -152,6 +158,8 @@ def encode_mp3(
         "-f", "s16le", "-ar", str(sample_rate), "-ac", "1", "-i", str(pcm_path),
         "-codec:a", "libmp3lame", "-qscale:a", str(quality),
     ]
+    if audio_filter:
+        cmd += ["-af", audio_filter]
     if tags:
         cmd += tags.as_ffmpeg_args()
     cmd.append(str(out_path))

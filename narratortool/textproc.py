@@ -87,6 +87,10 @@ _MAX_LABEL_WORDS = 3
 _MAX_LABELS_PER_SIDE = 6
 # "10ms" and "1e-3" are numbers with a unit; "@DougBlank2" is a word with a digit in it.
 _MAX_UNIT_LETTERS = 3
+# Graph vertex names are one or two characters ("A", "DB", "Ax"), and a row of them runs
+# to at least three. Both bounds are what keep this off ordinary two-letter words.
+_MAX_VERTEX_CHARS = 2
+_MIN_VERTEX_TOKENS = 3
 
 
 def normalize(text: str, strip_boilerplate: bool = True, strip_figures: bool = True) -> str:
@@ -132,6 +136,7 @@ def _partition_figure_lines(text: str) -> tuple[list[str], list[str]]:
     lines = text.split("\n")
     verdict = _classify_lines(lines)
     _sweep_chart_labels(lines, verdict)
+    _sweep_vertex_runs(lines, verdict)
 
     kept = [line for line, v in zip(lines, verdict) if v is None]
     dropped = [line.strip() for line, v in zip(lines, verdict) if v is not None]
@@ -220,6 +225,78 @@ def _alpha_count(token: str) -> int:
     return sum(1 for c in token if c.isalpha())
 
 
+def _sweep_vertex_runs(lines: list[str], verdict: list[str | None]) -> None:
+    """Drop a run of consecutive lines that are each a single graph vertex name.
+
+    A PDF of a graph diagram extracts its nodes one per line — "A", "DB", "C", "F",
+    "E" — with no digits and no symbols anywhere near them. `_sweep_chart_labels`
+    catches the ones that happen to sit against a tick number, but a graph has no
+    axis, so a run in the middle of a figure has nothing to seed from and survives.
+
+    It survives invisibly, too: each line is a plausible fragment on its own, and it
+    is only when `normalize` joins them back into a paragraph that they become the
+    line "A DB C F E" and get read aloud as letter soup.
+
+    A run of three is the signal. One or two short lines are ordinary text — a list
+    item, an initial, a stray "I" — so only three or more in a row are taken.
+    """
+    run: list[int] = []
+
+    def flush() -> None:
+        if len(run) >= _MIN_VERTEX_TOKENS:
+            for index in run:
+                verdict[index] = "debris"
+        run.clear()
+
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if verdict[index] is not None:
+            # Already dropped: it neither extends a run nor breaks one, so that a
+            # numeric line swept out of the middle of a graph does not split it in two.
+            continue
+        if not stripped:
+            flush()
+            continue
+        bare = stripped.strip("([{<>}])\"'“”‘’.,;:!?—–-")
+        if bare.isalpha() and len(bare) <= _MAX_VERTEX_CHARS:
+            run.append(index)
+        else:
+            flush()
+    flush()
+
+
+def _is_vertex_row(tokens: list[str]) -> bool:
+    """A row of graph vertex names: "A DB C F E", "DB C F E A Ax", "A D BC F E".
+
+    Diagram-heavy books extract the node labels of a graph as a bare line of one- and
+    two-character names. `_is_plot_debris` misses these because they carry no digits
+    and no symbols, and its single-letter rule deliberately will not fire on letters
+    alone — that rule has to leave "I." and "IV" alone in plain-text books.
+
+    What identifies a vertex row is the shape: several tokens, none longer than two
+    characters, mostly single letters, and at least one capital. Ordinary prose cannot
+    look like this, and a genuine short line ("US UK EU", "I II") is excluded by
+    requiring both the token count and the single-letter majority.
+    """
+    if len(tokens) < _MIN_VERTEX_TOKENS:
+        return False
+
+    singles = 0
+    has_upper = False
+    for token in tokens:
+        bare = token.strip("([{<>}])\"'“”‘’.,;:!?—–-")
+        if not bare or not bare.isalpha() or len(bare) > _MAX_VERTEX_CHARS:
+            return False
+        if len(bare) == 1:
+            singles += 1
+        if bare[0].isupper():
+            has_upper = True
+
+    # A majority of bare single letters is what separates a vertex row from a run of
+    # two-letter words ("of it is an", "we go to be") that a bad extraction might leave.
+    return has_upper and singles * 2 > len(tokens)
+
+
 def _is_plot_debris(line: str) -> bool:
     """Is this line the loose text of a chart rather than a sentence?
 
@@ -233,6 +310,9 @@ def _is_plot_debris(line: str) -> bool:
     tokens = line.split()
     if not tokens:
         return False
+
+    if _is_vertex_row(tokens):
+        return True
 
     numeric = symbolic = single = words = 0
     for token in tokens:

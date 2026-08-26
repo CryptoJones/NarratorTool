@@ -13,9 +13,24 @@ from .extract import UnsupportedFormat, supported_extensions
 from .pipeline import DEFAULT_RETRIES, OMISSION_NOTICE, NarrationAborted
 from .textproc import chunk, normalize
 from .tts import BackendUnavailable, available_backends, get_backend
-from .tts.kokoro_backend import DEFAULT_LANG, DEFAULT_SPEED, DEFAULT_VOICE
+from .tts.kokoro_backend import (
+    DEFAULT_LANG,
+    DEFAULT_SPEED,
+    DEFAULT_VOICE,
+    PROFILES,
+    default_lang_for,
+    default_speed_for,
+)
 
-# The house voice, and the rest of the Kokoro set worth knowing about.
+# Seconds of speech per character of chunked text, at speed 1.0. Measured over a real
+# 619-chunk run (Computer Science Distilled, 229,292 chars, 4:18 of audio at 0.96x):
+# least-squares through the origin gives 0.0672 s/char at 0.96x, so 0.0645 at 1.0x.
+# Duration scales as 1/speed. The old estimate assumed a flat 4s per chunk and was
+# roughly 6x low, because a chunk averages ~370 chars and ~25s, not 4s.
+SECONDS_PER_CHAR = 0.0645
+
+# The house voice, and the rest of the Kokoro set worth knowing about. Cast profiles
+# (PROFILES) are listed separately by --list-voices: they are blends, not single voices.
 KNOWN_VOICES = {
     "bf_emma": "UK female — the CryptoJones house narration voice",
     "bf_isabella": "UK female",
@@ -45,9 +60,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-o", "--output", type=Path, help="output MP3 (default: alongside source)")
 
     voice = parser.add_argument_group("voice")
-    voice.add_argument("--voice", default=DEFAULT_VOICE, help=f"Kokoro voice (default: {DEFAULT_VOICE})")
-    voice.add_argument("--speed", type=float, default=DEFAULT_SPEED,
-                       help=f"speech rate (default: {DEFAULT_SPEED})")
+    voice.add_argument("--voice", default=DEFAULT_VOICE,
+                       help=f"cast profile or Kokoro voice (default: {DEFAULT_VOICE})")
+    voice.add_argument("--speed", type=float, default=None,
+                       help=f"speech rate (default: the voice's own, {DEFAULT_SPEED} for "
+                            f"{DEFAULT_VOICE})")
     voice.add_argument("--lang", default=None,
                        help="Kokoro language code; inferred from the voice prefix if omitted")
     voice.add_argument("--backend", default="kokoro", choices=available_backends())
@@ -92,9 +109,15 @@ def infer_lang(voice: str, explicit: str | None) -> str:
 
     Getting this wrong is silent — a British voice under lang_code 'a' still produces
     audio, just with American phonemes — so it is inferred rather than defaulted.
+
+    A cast profile is a blend and has no single prefix to read, so it states its own
+    language; 'nia'[0] would otherwise infer the nonexistent language 'n'.
     """
     if explicit:
         return explicit
+    from_profile = default_lang_for(voice)
+    if from_profile:
+        return from_profile
     return voice[0] if voice and voice[0].isalpha() else DEFAULT_LANG
 
 
@@ -106,6 +129,14 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.list_voices:
+        print("cast profiles (blends, with their own speed and pitch):")
+        for name, profile in PROFILES.items():
+            marker = " *" if name == DEFAULT_VOICE else "  "
+            blend = " + ".join(f"{w:.0%} {v}" for v, w in profile["voices"].items())
+            print(f"{marker} {name:<16} {profile['description']}")
+            print(f"    {'':<16} {blend}, {profile['speed']}x, "
+                  f"{profile['pitch_semitones']:+g}st")
+        print("\nstock Kokoro voices:")
         for name, desc in KNOWN_VOICES.items():
             marker = " *" if name == DEFAULT_VOICE else "  "
             print(f"{marker} {name:<16} {desc}")
@@ -122,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.max_chars < 1:
         print("error: --max-chars must be at least 1", file=sys.stderr)
         return 2
-    if not 0.1 <= args.speed <= 3.0:
+    if args.speed is not None and not 0.1 <= args.speed <= 3.0:
         print(f"error: --speed {args.speed} is outside the usable range 0.1-3.0", file=sys.stderr)
         return 2
 
@@ -160,6 +191,7 @@ def _dry_run(args) -> int:
 
     doc = extract(args.source)
     total = 0
+    spoken_chars = 0
     suppressed: list[str] = []
     print(f"title   : {doc.title}")
     print(f"author  : {doc.author or '(unknown)'}")
@@ -172,6 +204,7 @@ def _dry_run(args) -> int:
             args.max_chars,
         )
         total += len(pieces)
+        spoken_chars += sum(len(p) for p in pieces)
         label = ch.title or f"(untitled {i})"
         print(f"  {i:>3}. {label[:58]:<58} {len(ch.text):>8,} chars  {len(pieces):>5} chunks")
     print(f"\ntotal chunks: {total:,}")
@@ -184,8 +217,10 @@ def _dry_run(args) -> int:
             print(f"    - {line[:70]}")
         if len(suppressed) > 5:
             print(f"    ... and {len(suppressed) - 5:,} more")
-    # Kokoro on a 4060 runs comfortably faster than realtime; this is a rough floor.
-    print(f"estimated audio: ~{format_duration(total * 4.0)} (at ~4s per chunk)")
+    speed = args.speed if args.speed is not None else default_speed_for(args.voice)
+    seconds = spoken_chars * SECONDS_PER_CHAR / speed
+    print(f"estimated audio: ~{format_duration(seconds)} "
+          f"({spoken_chars:,} spoken chars at {speed}x)")
     return 0
 
 

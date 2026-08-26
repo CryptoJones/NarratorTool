@@ -332,7 +332,8 @@ def _run(
             duration = writer.duration_seconds
             writer.close()
 
-            encode_mp3(pcm_path, output, backend.sample_rate, tags=_tags(doc, backend))
+            encode_mp3(pcm_path, output, backend.sample_rate, tags=_tags(doc, backend),
+                       audio_filter=getattr(backend, "audio_filter", None))
 
         except NarrationAborted:
             raise
@@ -392,7 +393,8 @@ def _salvage(writer, pcm_path: Path, output: Path, backend, doc, runlog) -> Path
         if writer.duration_seconds <= 0 or not pcm_path.is_file() or pcm_path.stat().st_size == 0:
             return None
         partial_path = output.with_name(f"{output.stem}.partial{output.suffix or '.mp3'}")
-        encode_mp3(pcm_path, partial_path, backend.sample_rate, tags=_tags(doc, backend))
+        encode_mp3(pcm_path, partial_path, backend.sample_rate, tags=_tags(doc, backend),
+                   audio_filter=getattr(backend, "audio_filter", None))
         log.warning("salvaged %s of audio to %s",
                     format_duration(writer.duration_seconds), partial_path)
         runlog.write(

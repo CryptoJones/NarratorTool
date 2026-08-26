@@ -40,6 +40,24 @@ new narrations match the existing catalogue without passing any flags.
 `narrate --list-voices` shows the rest. Voice names encode their language: the first
 letter is the language (`a` American, `b` British) and the second the gender (`f`, `m`).
 
+### Cast profiles
+
+A *profile* is a cast voice rather than a stock one: a weighted blend of several Kokoro
+voices with its own speed and an optional pitch shift. These are for one-off books where
+the house voice is not what you want — the default stays Emma.
+
+```bash
+narrate book.epub --voice nia        # Imani Nia Baptiste, Antigua Runners cast
+```
+
+`nia` is 56% `af_nova` + 44% `af_heart` at 0.96 with a −0.2 semitone formant-preserving
+shift, mirroring the game's `data/audio/kokoro_voice_cast.json`. A blend has no single
+name prefix to read, so a profile states its own language and speed; `--speed` overrides
+it. The pitch shift is applied by ffmpeg's `rubberband` filter during the MP3 encode —
+one pass over the finished audio rather than per chunk, so there is no seam at chunk
+joins. **An ffmpeg built without librubberband cannot render a pitched profile**, and
+`narrate` says so at startup instead of quietly producing an untreated book.
+
 **The language code is inferred from the voice prefix**, so `--voice bm_george` selects
 British automatically. This matters because getting it wrong is *silent* — a British
 voice under an American language code still produces audio, just with the wrong
@@ -95,6 +113,11 @@ uv venv --python 3.11 .venv && source .venv/bin/activate
 **System packages:** `ffmpeg` for MP3 encoding, and `espeak-ng` for any non-American
 voice — including the default British one — because Kokoro falls back to espeak for
 grapheme-to-phoneme on out-of-dictionary words.
+
+A pitched cast profile such as `nia` additionally needs an `ffmpeg` built **with
+librubberband** (`ffmpeg -filters | grep rubberband`). Debian and Homebrew ffmpeg both
+ship it; a minimal static build may not. The default voice needs no shift, so this only
+matters if you pass `--voice nia`.
 
 ```bash
 apt install ffmpeg espeak-ng      # or: brew install ffmpeg espeak-ng

@@ -12,4 +12,8 @@ htmlcov/
 *.mp3
 *.wav
 *.pcm
+
+# The Chatterbox reference clips are package data, not render output: the default
+# backend clones its voice from one, so a clone without them has no voice at all.
+!narratortool/voices/*.wav
 .DS_Store

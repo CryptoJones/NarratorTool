@@ -1,3 +1,5 @@
+<p align="center"><em>Proudly Made in Nebraska. Go Big Red! 🌽 <a href="https://xkcd.com/2347/">https://xkcd.com/2347/</a></em></p>
+
 # NarratorTool
 
 Narrate documents to MP3 with local neural TTS. Point it at a `.txt`, `.md`, `.pdf`,
@@ -9,7 +11,7 @@ you happen to be narrating.
 ```bash
 narrate book.epub                      # -> book.mp3
 narrate paper.pdf -o out/paper.mp3
-narrate notes.md --voice bm_george --speed 1.0
+narrate notes.md --backend kokoro --voice bm_george --speed 1.0
 narrate huge.txt --dry-run             # parse + chunk, report stats, synthesize nothing
 ```
 
@@ -31,23 +33,87 @@ narrate book.epub
 To type `narrate` from anywhere without activating, run `./INSTALL.sh --link`, which
 symlinks it into `~/.local/bin`.
 
+## Engines
+
+Two TTS backends, selected with `--backend`.
+
+| | **`chatterbox`** (default) | **`kokoro`** |
+|---|---|---|
+| voice | clones a reference clip | selects a named style vector |
+| size | 0.5B, needs a GPU in practice | 82M, fine on CPU |
+| consistency | 7.3% f0 IQR across takes | — |
+| pace control | time stretch on the finished audio | native `speed` parameter |
+
+**Chatterbox is the default because of the consistency column.** Over a book of several
+thousand chunks, the thing a listener notices is not the timbre of any one sentence but
+whether the narrator sounds like the same person in chapter nine as in chapter one.
+Chatterbox holds a voice roughly three times steadier across takes than the alternatives
+measured against it.
+
+Kokoro is kept, not deprecated. It is two orders of magnitude smaller, it runs on a
+laptop with no GPU, and it is what the existing catalogue was rendered with.
+
+```bash
+narrate book.epub                        # chatterbox, house voice
+narrate book.epub --backend kokoro       # kokoro, bf_emma at 0.88
+```
+
 ## Voice
 
-The default is **`bf_emma` at speed 0.88** — Emma, UK female. This is the house
-narration voice used across the OpenCourseWare courses and the Math-for-ML video, so
-new narrations match the existing catalogue without passing any flags.
+The default is the **house reference clip** (`--voice house`), which is bf_emma at 0.88
+banked as audio. Chatterbox clones from a clip rather than selecting a voice, so this is
+how the house voice — the one used across the OpenCourseWare courses and the Math-for-ML
+video — survives the engine change and new narrations still match the catalogue.
+
+`--voice` also takes a path to any WAV, so cloning a different narrator is a matter of
+handing it ten to twenty seconds of clean single-speaker audio:
+
+```bash
+narrate book.epub --voice ~/clips/somebody.wav
+```
+
+### Pace
+
+Chatterbox has no speed parameter, so `--speed` is a time stretch applied by ffmpeg
+during the MP3 encode — one pass over the finished audio, no seam at any chunk join.
+The default is **0.9**, which is the stretch a full episode was listened to at and
+signed off on. Chatterbox reads about 17.1 characters per second against Kokoro's 15.5,
+so matching the legacy house pace exactly wants roughly `--speed 0.8`; 0.9 is the
+default because it is the value with a listener behind it rather than arithmetic.
+
+### Short lines, and why they are rendered inside a sentence
+
+Chatterbox misreads short inputs — not slightly, but as *entirely different words*, and
+fluently enough that nothing about the audio reads as an error. Measured misread rates
+are 79% at one word, 51% at two, 33% at three, 9% at four. Chapter headings ("Preface",
+"Index") and the omission notice are exactly that shape, so this is not a rare case.
+
+Temperature does not help and neither does seed hunting; the model simply has too little
+context. So any input under five words is rendered inside a carrier sentence and the
+carrier is cut back off afterwards, located by the pause the model leaves after its full
+stop — no ASR pass needed.
+
+Measured on the twelve short inputs a book actually produces, transcribed back with
+Whisper: **7/12 correct without the carrier, 11/12 with it.** That is a real improvement
+and not a cure. Roughly one heading in eight is still read as a different word, so on a
+book with many headings, spot-check them. Tightening this further is
+[#6](https://github.com/CryptoJones/NarratorTool/issues/6).
+
+### Kokoro voices
+
+With `--backend kokoro`, the default is **`bf_emma` at speed 0.88**.
 
 `narrate --list-voices` shows the rest. Voice names encode their language: the first
 letter is the language (`a` American, `b` British) and the second the gender (`f`, `m`).
 
-### Cast profiles
+### Kokoro cast profiles
 
 A *profile* is a cast voice rather than a stock one: a weighted blend of several Kokoro
 voices with its own speed and an optional pitch shift. These are for one-off books where
 the house voice is not what you want — the default stays Emma.
 
 ```bash
-narrate book.epub --voice nia        # Imani Nia Baptiste, Antigua Runners cast
+narrate book.epub --backend kokoro --voice nia   # Imani Nia Baptiste, Antigua Runners cast
 ```
 
 `nia` is 56% `af_nova` + 44% `af_heart` at 0.96 with a −0.2 semitone formant-preserving
@@ -75,7 +141,8 @@ The installer picks an interpreter Kokoro supports, builds `.venv` against it (u
 
 | Flag | Effect |
 |---|---|
-| `--extras kokoro` | TTS + plain text only, instead of everything |
+| `--extras chatterbox` | the default engine + plain text only |
+| `--extras kokoro` | the light engine + plain text only, instead of everything |
 | `--extras pdf,epub` | parsers only — skips the torch download |
 | `--dev` | also install `pytest` and `ruff` |
 | `--link` | symlink `narrate` into `~/.local/bin` |
@@ -86,8 +153,9 @@ It is safe to re-run: an existing `.venv` is reused unless you pass `--recreate`
 ### By hand
 
 ```bash
-pip install -e ".[all]"      # every format + Kokoro
-pip install -e ".[kokoro]"   # TTS + plain text only
+pip install -e ".[all]"          # every format + Kokoro
+pip install -e ".[chatterbox]"   # the default engine + plain text only
+pip install -e ".[kokoro]"       # the light engine + plain text only
 ```
 
 Parsers are extras, so a text-only install does not drag in `pypdf`, `ebooklib`, or
@@ -269,10 +337,21 @@ Use `--log PATH` to put it elsewhere, or `--no-log` to skip it.
 
 ## Backends
 
-Kokoro ([hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M)) is the default
-and currently the only implementation. The backend is a small protocol —
-`sample_rate`, `name`, `synthesize(text) -> np.ndarray` — so another engine is a single
-new class plus a registry entry.
+Chatterbox ([resemble-ai/chatterbox](https://github.com/resemble-ai/chatterbox), MIT) is
+the default; Kokoro ([hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M)) is
+the lightweight alternative. The backend is a small protocol — `sample_rate`, `name`,
+`synthesize(text) -> np.ndarray`, plus an optional `audio_filter` the encode pass applies
+— so another engine is a single new class plus a registry entry.
+
+**Install one engine extra, not both.** They want different `torch` versions, and
+resolving them together downgrades one:
+
+```bash
+pip install -e ".[chatterbox,epub,pdf]"   # the default engine
+pip install -e ".[kokoro,epub,pdf]"       # the light one
+```
+
+`.[all]` deliberately means "Kokoro plus every parser" for that reason.
 
 ## Scanned PDFs
 

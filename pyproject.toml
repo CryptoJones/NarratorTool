@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "CryptoJones", email = "cryptojones@owasp.org" }]
-keywords = ["tts", "kokoro", "audiobook", "narration", "epub", "pdf"]
+keywords = ["tts", "chatterbox", "kokoro", "audiobook", "narration", "epub", "pdf"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -24,11 +24,17 @@ classifiers = [
 dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
+# Chatterbox is the default backend. It pins its own torch, so keep it in an extra of
+# its own rather than merging it with kokoro's - the two have been seen wanting
+# different torch versions, and resolving them together downgrades one of them.
+chatterbox = ["chatterbox-tts>=0.1.7", "torch>=2.6", "torchaudio>=2.6"]
 kokoro = ["kokoro>=0.9.4", "torch>=2.0", "soundfile>=0.12"]
 pdf = ["pypdf>=4.0"]
 epub = ["ebooklib>=0.18", "beautifulsoup4>=4.12"]
 docx = ["python-docx>=1.1"]
 html = ["beautifulsoup4>=4.12"]
+# `all` deliberately omits chatterbox: it drags in a torch pin that fights kokoro's.
+# Install one engine extra plus the parsers you need.
 all = [
     "kokoro>=0.9.4", "torch>=2.0", "soundfile>=0.12",
     "pypdf>=4.0", "ebooklib>=0.18", "beautifulsoup4>=4.12", "python-docx>=1.1",
@@ -45,6 +51,11 @@ Issues = "https://github.com/CryptoJones/NarratorTool/issues"
 
 [tool.setuptools.packages.find]
 include = ["narratortool*"]
+
+# The Chatterbox reference clips are data, not code, and must survive a wheel build:
+# without this the default backend has no voice to clone and fails at startup.
+[tool.setuptools.package-data]
+narratortool = ["voices/*.wav"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

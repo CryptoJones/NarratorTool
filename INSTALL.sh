@@ -2,13 +2,18 @@
 #
 # NarratorTool installer.
 #
-# Creates a virtualenv against a Python that Kokoro supports, installs the package
-# and its extras into it, checks for the system binaries the pipeline shells out to,
-# and prints the command to narrate a file.
+# Creates a virtualenv against a supported Python, installs the package and its extras
+# into it, checks for the system binaries the pipeline shells out to, and prints the
+# command to narrate a file.
 #
-#   ./INSTALL.sh                    # everything: all parsers + Kokoro TTS
-#   ./INSTALL.sh --extras kokoro    # TTS + plain text only
-#   ./INSTALL.sh --extras pdf,epub  # parsers only, no torch download
+# The default installs Chatterbox, the default TTS backend, plus every parser. Kokoro
+# is NOT installed alongside it: the two engines pin different torch versions, and
+# resolving them together downgrades one. Pick the engine, not both.
+#
+#   ./INSTALL.sh                        # every parser + Chatterbox (the default engine)
+#   ./INSTALL.sh --extras all           # every parser + Kokoro (the light engine)
+#   ./INSTALL.sh --extras chatterbox    # TTS + plain text only
+#   ./INSTALL.sh --extras pdf,epub      # parsers only, no torch download
 #   ./INSTALL.sh --dev              # add pytest + ruff
 #   ./INSTALL.sh --link             # also symlink `narrate` into ~/.local/bin
 #   ./INSTALL.sh --recreate         # rebuild .venv from scratch
@@ -19,12 +24,13 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$REPO_DIR/.venv"
 LINK_DIR="${HOME}/.local/bin"
 
-EXTRAS="all"
+EXTRAS="chatterbox,pdf,epub,docx,html"
 WITH_DEV=0
 DO_LINK=0
 RECREATE=0
 
-# Kokoro publishes no wheels for 3.13+, and the package floor is 3.10.
+# Kokoro publishes no wheels for 3.13+, and the package floor is 3.10. Chatterbox is
+# happy on 3.11 and 3.12, so this ordering suits both engines.
 PY_CANDIDATES=(python3.12 python3.11 python3.10 python3)
 
 # ---------------------------------------------------------------- output helpers
@@ -135,7 +141,7 @@ fi
 
 step "Installing narratortool $SPEC"
 case "$EXTRAS" in
-    *all*|*kokoro*) info "${DIM}this pulls torch — expect a large download on a cold cache${RESET}" ;;
+    *all*|*kokoro*|*chatterbox*) info "${DIM}this pulls torch — expect a large download on a cold cache${RESET}" ;;
 esac
 
 if [ -n "$UV" ]; then
@@ -164,9 +170,18 @@ MISSING=()
 # ffmpeg does the MP3 encode; without it the run dies at the final step, after
 # synthesis, which is the most expensive thing to have to repeat.
 if command -v ffmpeg >/dev/null 2>&1; then info "ffmpeg     found"; else info "ffmpeg     ${RED}MISSING${RESET}"; MISSING+=(ffmpeg); fi
-# espeak-ng is the grapheme-to-phoneme fallback for out-of-dictionary words, and is
-# required for every non-American voice — including the default British bf_emma.
-if command -v espeak-ng >/dev/null 2>&1; then info "espeak-ng  found"; else info "espeak-ng  ${RED}MISSING${RESET}"; MISSING+=(espeak-ng); fi
+# espeak-ng is Kokoro's grapheme-to-phoneme fallback for out-of-dictionary words, and
+# is required for every non-American Kokoro voice — including bf_emma. Chatterbox has
+# no phonemizer and does not need it, so it is only reported as missing when Kokoro is
+# actually being installed.
+if command -v espeak-ng >/dev/null 2>&1; then
+    info "espeak-ng  found"
+else
+    case "$EXTRAS" in
+        *all*|*kokoro*) info "espeak-ng  ${RED}MISSING${RESET}"; MISSING+=(espeak-ng) ;;
+        *) info "espeak-ng  ${DIM}not installed (only Kokoro needs it)${RESET}" ;;
+    esac
+fi
 
 if [ ${#MISSING[@]} -gt 0 ]; then
     warn "missing: ${MISSING[*]} — install them before narrating:"

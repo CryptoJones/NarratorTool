@@ -12,7 +12,16 @@ from .audio import AudioWriteError, FFmpegMissing, format_duration
 from .extract import UnsupportedFormat, supported_extensions
 from .pipeline import DEFAULT_RETRIES, OMISSION_NOTICE, NarrationAborted
 from .textproc import chunk, normalize
-from .tts import BackendUnavailable, available_backends, get_backend
+from .tts import (
+    DEFAULT_BACKEND,
+    BackendUnavailable,
+    available_backends,
+    chars_per_second,
+    default_voice,
+    get_backend,
+)
+from .tts.chatterbox_backend import DEFAULT_SPEED as CHATTERBOX_SPEED
+from .tts.chatterbox_backend import available_voices as chatterbox_voices
 from .tts.kokoro_backend import (
     DEFAULT_LANG,
     DEFAULT_SPEED,
@@ -21,13 +30,6 @@ from .tts.kokoro_backend import (
     default_lang_for,
     default_speed_for,
 )
-
-# Seconds of speech per character of chunked text, at speed 1.0. Measured over a real
-# 619-chunk run (Computer Science Distilled, 229,292 chars, 4:18 of audio at 0.96x):
-# least-squares through the origin gives 0.0672 s/char at 0.96x, so 0.0645 at 1.0x.
-# Duration scales as 1/speed. The old estimate assumed a flat 4s per chunk and was
-# roughly 6x low, because a chunk averages ~370 chars and ~25s, not 4s.
-SECONDS_PER_CHAR = 0.0645
 
 # The house voice, and the rest of the Kokoro set worth knowing about. Cast profiles
 # (PROFILES) are listed separately by --list-voices: they are blends, not single voices.
@@ -52,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
             "examples:\n"
             "  narrate book.epub\n"
             "  narrate paper.pdf -o out/paper.mp3 --announce-chapters\n"
-            "  narrate notes.md --voice bm_george --speed 1.0\n"
+            "  narrate notes.md --backend kokoro --voice bm_george --speed 1.0\n"
             f"\nsupported input: {', '.join(supported_extensions())}\n"
         ),
     )
@@ -60,14 +62,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-o", "--output", type=Path, help="output MP3 (default: alongside source)")
 
     voice = parser.add_argument_group("voice")
-    voice.add_argument("--voice", default=DEFAULT_VOICE,
-                       help=f"cast profile or Kokoro voice (default: {DEFAULT_VOICE})")
+    voice.add_argument("--voice", default=None,
+                       help="reference clip (chatterbox) or voice/cast profile (kokoro); "
+                            "default: the backend's own")
     voice.add_argument("--speed", type=float, default=None,
-                       help=f"speech rate (default: the voice's own, {DEFAULT_SPEED} for "
-                            f"{DEFAULT_VOICE})")
+                       help=f"speech rate (default: the voice's own — {CHATTERBOX_SPEED} for "
+                            f"chatterbox, {DEFAULT_SPEED} for {DEFAULT_VOICE})")
     voice.add_argument("--lang", default=None,
                        help="Kokoro language code; inferred from the voice prefix if omitted")
-    voice.add_argument("--backend", default="kokoro", choices=available_backends())
+    voice.add_argument("--backend", default=DEFAULT_BACKEND, choices=available_backends())
     voice.add_argument("--device", default=None, help="cuda | mps | cpu (default: autodetect)")
 
     text = parser.add_argument_group("text handling")
@@ -121,6 +124,37 @@ def infer_lang(voice: str, explicit: str | None) -> str:
     return voice[0] if voice and voice[0].isalpha() else DEFAULT_LANG
 
 
+def _list_voices(backend: str) -> None:
+    """List every voice, grouped by backend, marking the one `--backend` will pick.
+
+    Both backends are listed whichever is selected, because the common reason to run
+    this is deciding between them.
+    """
+    default = default_voice(backend)
+
+    def marker(name: str, owner: str) -> str:
+        return " *" if owner == backend and name == default else "  "
+
+    print("chatterbox reference clips (cloned; --voice also takes a path to a WAV):")
+    for name in chatterbox_voices() or ["(none installed)"]:
+        note = " — the CryptoJones house narration voice" if name == "house" else ""
+        print(f"{marker(name, 'chatterbox')} {name:<16}{note}")
+
+    print("\nkokoro cast profiles (blends, with their own speed and pitch):")
+    for name, profile in PROFILES.items():
+        blend = " + ".join(f"{w:.0%} {v}" for v, w in profile["voices"].items())
+        print(f"{marker(name, 'kokoro')} {name:<16} {profile['description']}")
+        print(f"    {'':<16} {blend}, {profile['speed']}x, "
+              f"{profile['pitch_semitones']:+g}st")
+
+    print("\nkokoro stock voices:")
+    for name, desc in KNOWN_VOICES.items():
+        print(f"{marker(name, 'kokoro')} {name:<16} {desc}")
+
+    print(f"\n* = default for --backend {backend}. "
+          "Kokoro prefix: a=American, b=British; f=female, m=male.")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(
@@ -129,19 +163,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.list_voices:
-        print("cast profiles (blends, with their own speed and pitch):")
-        for name, profile in PROFILES.items():
-            marker = " *" if name == DEFAULT_VOICE else "  "
-            blend = " + ".join(f"{w:.0%} {v}" for v, w in profile["voices"].items())
-            print(f"{marker} {name:<16} {profile['description']}")
-            print(f"    {'':<16} {blend}, {profile['speed']}x, "
-                  f"{profile['pitch_semitones']:+g}st")
-        print("\nstock Kokoro voices:")
-        for name, desc in KNOWN_VOICES.items():
-            marker = " *" if name == DEFAULT_VOICE else "  "
-            print(f"{marker} {name:<16} {desc}")
-        print("\n* = default. Prefix: a=American, b=British; f=female, m=male.")
+        _list_voices(args.backend)
         return 0
+
+    if args.voice is None:
+        args.voice = default_voice(args.backend)
 
     if args.source is None:
         build_parser().print_help()
@@ -217,8 +243,8 @@ def _dry_run(args) -> int:
             print(f"    - {line[:70]}")
         if len(suppressed) > 5:
             print(f"    ... and {len(suppressed) - 5:,} more")
-    speed = args.speed if args.speed is not None else default_speed_for(args.voice)
-    seconds = spoken_chars * SECONDS_PER_CHAR / speed
+    speed = _speed_for(args)
+    seconds = spoken_chars / chars_per_second(args.backend) / speed
     print(f"estimated audio: ~{format_duration(seconds)} "
           f"({spoken_chars:,} spoken chars at {speed}x)")
     return 0
@@ -264,17 +290,40 @@ class _ProgressLine:
         root.handlers = [handler]
 
 
+def _speed_for(args) -> float:
+    """The speed the run will actually use, for the dry run's estimate.
+
+    Only Kokoro reads a speed off the voice — a Chatterbox reference clip is an
+    acoustic prompt, not a profile, so its pacing belongs to the backend.
+    """
+    if args.speed is not None:
+        return args.speed
+    if args.backend == "kokoro":
+        return default_speed_for(args.voice)
+    return CHATTERBOX_SPEED
+
+
+def _backend_kwargs(args) -> dict:
+    """Only Kokoro takes a language code, and only Kokoro can infer one from a voice.
+
+    Passing it regardless would hand Chatterbox `infer_lang("house")` — the letter
+    'h', which is Kokoro's code for Hindi. Chatterbox ignores the argument, so this
+    would be harmless today and quietly wrong the moment it stops being ignored.
+    """
+    kwargs = {"voice": args.voice, "speed": args.speed, "device": args.device}
+    if args.backend == "kokoro":
+        kwargs["lang_code"] = infer_lang(args.voice, args.lang)
+    elif args.lang:
+        print(f"warning: --lang is a Kokoro setting and does not apply to "
+              f"--backend {args.backend}; ignoring it", file=sys.stderr)
+    return kwargs
+
+
 def _narrate(args) -> int:
     from .pipeline import narrate_file
 
     started = time.time()
-    backend = get_backend(
-        args.backend,
-        voice=args.voice,
-        lang_code=infer_lang(args.voice, args.lang),
-        speed=args.speed,
-        device=args.device,
-    )
+    backend = get_backend(args.backend, **_backend_kwargs(args))
 
     line = _ProgressLine(enabled=not args.quiet)
     line.install()

@@ -31,6 +31,11 @@ log = logging.getLogger(__name__)
 
 SAMPLE_RATE = 24_000
 
+# Characters of text spoken per second at 1.0x. Least-squares through the origin over
+# a real 619-chunk run (Computer Science Distilled, 229,292 chars, 4:18 of audio at
+# 0.96x) gives 0.0645 s/char, so 15.5 c/s. Duration scales as 1/speed.
+CHARS_PER_SECOND = 15.50
+
 # Cast profiles. `voices` weights must sum to 1.0 — the blend is a weighted sum of the
 # per-voice style vectors, so weights that do not sum to one change the loudness and
 # character of the result rather than failing.

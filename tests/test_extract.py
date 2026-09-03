@@ -116,3 +116,76 @@ class TestHeadingDetectionRegression:
         f = tmp_path / "comma.txt"
         f.write_text("Intro.\n\npart of the whole,\nmore text here.\n\npart two,\nand more.\n")
         assert len(extract(f).chapters) == 1
+
+
+class _StubPage:
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def extract_text(self) -> str:
+        return self._text
+
+
+class _StubReader:
+    """A PdfReader stand-in: pypdf can parse PDFs but not author text-bearing ones,
+    and a real fixture would mean a new build dependency for one assembly rule."""
+
+    def __init__(self, pages: list[str], outline: list[tuple[str, int]]) -> None:
+        self.pages = [_StubPage(t) for t in pages]
+        self.metadata: dict[str, str] = {}
+        self._outline = outline
+
+    @property
+    def outline(self):
+        return [type("Item", (), {"title": t})() for t, _ in self._outline]
+
+    def get_destination_page_number(self, item) -> int:
+        return dict(self._outline)[item.title]
+
+
+class TestPdfFrontMatter:
+    """Guards the bug where everything ahead of the outline's first bookmark was
+    dropped: a paper's title, author and abstract, narrated starting mid-sentence."""
+
+    @staticmethod
+    def _extract(monkeypatch, tmp_path, pages, outline):
+        import pypdf
+
+        monkeypatch.setattr(pypdf, "PdfReader", lambda _: _StubReader(pages, outline))
+        f = tmp_path / "paper.pdf"
+        f.write_bytes(b"%PDF-1.4")
+        return extract(f)
+
+    def test_keeps_pages_before_the_first_bookmark(self, monkeypatch, tmp_path):
+        doc = self._extract(
+            monkeypatch, tmp_path,
+            ["Title Page. Abstract begins.", "Intro body.", "Method body."],
+            [("Introduction", 1), ("Method", 2)],
+        )
+        assert "Title Page" in doc.text
+        assert "Abstract begins" in doc.text
+
+    def test_front_matter_leads_and_is_untitled(self, monkeypatch, tmp_path):
+        doc = self._extract(
+            monkeypatch, tmp_path,
+            ["Front.", "Intro body.", "Method body."],
+            [("Introduction", 1), ("Method", 2)],
+        )
+        assert [c.title for c in doc.chapters] == [None, "Introduction", "Method"]
+        assert doc.chapters[0].text == "Front."
+
+    def test_no_phantom_chapter_when_outline_starts_at_page_one(self, monkeypatch, tmp_path):
+        doc = self._extract(
+            monkeypatch, tmp_path,
+            ["Intro body.", "Method body."],
+            [("Introduction", 0), ("Method", 1)],
+        )
+        assert [c.title for c in doc.chapters] == ["Introduction", "Method"]
+
+    def test_blank_front_matter_adds_no_chapter(self, monkeypatch, tmp_path):
+        doc = self._extract(
+            monkeypatch, tmp_path,
+            ["   ", "Intro body.", "Method body."],
+            [("Introduction", 1), ("Method", 2)],
+        )
+        assert [c.title for c in doc.chapters] == ["Introduction", "Method"]

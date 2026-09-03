@@ -39,11 +39,25 @@ def extract_pdf(path: Path) -> Document:
 
     bounds = _outline_bounds(reader, len(pages))
     if bounds:
+        # The first bookmark rarely sits on page one. Whatever precedes it — title
+        # page, abstract, dedication, preface — belongs to no chapter, and joining
+        # only the bookmarked ranges drops it silently. It leads the document, so it
+        # leads the narration, untitled: there is no heading to announce.
+        front = _front_matter(pages, bounds[0][1])
+        if front:
+            doc.chapters.append(Chapter(text=front))
         for title, start, end in bounds:
             doc.chapters.append(Chapter(text="\n".join(pages[start:end]), title=title))
     else:
         doc.chapters.append(Chapter(text="\n".join(pages)))
     return doc
+
+
+def _front_matter(pages: list[str], first_bookmarked_page: int) -> str:
+    """The text ahead of the outline's first bookmark, empty when there is none."""
+    if first_bookmarked_page <= 0:
+        return ""
+    return "\n".join(pages[:first_bookmarked_page]).strip()
 
 
 def _outline_bounds(reader, page_count: int) -> list[tuple[str, int, int]]:
